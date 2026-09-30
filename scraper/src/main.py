@@ -5,13 +5,28 @@ from urllib.parse import urljoin
 from bs4 import BeautifulSoup
 from datetime import datetime, timezone
 import json
-
+import re
+from typing import Optional
+from pydantic import BaseModel, HttpUrl
+from pydantic import ValidationError
 BASE_URL = "https://books.toscrape.com/catalogue/page-1.html"
 CACHE_DIR = "cache"
 
 HEADERS = {
     "User-Agent": "Menna-Scraper/1.0 (+https://github.com/mennaahmed00/flyrank_assignmentss)"
 }
+
+class BookRecord(BaseModel):
+    title: str
+    product_url: HttpUrl
+    price_text: str
+    price_gbp: float
+    availability_text: str
+    rating_text: Optional[str] = None
+    description: Optional[str] = None
+    source_page: HttpUrl
+    fetched_at: str
+
 
 def fetch_or_cache(url, page_number):
     cache_file = os.path.join(CACHE_DIR, f"catalogue-page-{page_number}.html")
@@ -83,11 +98,15 @@ def parse_book_detail(html_content, product_url, source_page):
             
     # Timestamp
     fetched_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    match = re.search(r"[\d.]+", price_text) if price_text else None
+    price_gbp = float(match.group()) if match else 0.0
     
     return {
         "title": title,
         "product_url": product_url,
         "price_text": price_text,
+        "price_gbp": price_gbp,
         "availability_text": availability_text,
         "rating_text": rating_text,
         "description": description,
@@ -95,10 +114,14 @@ def parse_book_detail(html_content, product_url, source_page):
         "fetched_at": fetched_at
     }
 
+
 def run_scraper():
     current_url = BASE_URL
     page_count = 0
     discovered_items = []  # Stores (book_url, source_page) tuples
+
+    valid_books = []
+    errors = []
     
     # Stage 2: Crawl Catalogue Pages
     while current_url and page_count < 3:
@@ -132,20 +155,39 @@ def run_scraper():
 
     print(f"catalogue_pages={page_count}, discovered={len(discovered_items)}, unique_urls={len(unique_items)}")
 
-    # Stage 3: Extract Book Details
-    records = []
+    # Stage 3 & 4: Detail Fetching & Pydantic Validation
     for book_url, source_page in unique_items:
         slug = book_url.rstrip("/").split("/")[-2]
         cache_filename = f"detail-{slug}.html"
-        
         html = fetch_or_cache_detail(book_url, cache_filename)
-        record = parse_book_detail(html, book_url, source_page)
-        records.append(record)
+        raw_data = parse_book_detail(html, book_url, source_page)
 
-    # Checkpoint output
-    print("\n--- Sample Record ---")
-    print(json.dumps(records[0], indent=2))
-    print(f"detail_pages={len(records)}")
+        try:
+            record = BookRecord(**raw_data)
+            valid_books.append(record.model_dump(mode="json"))
+        except ValidationError as ve:
+            errors.append({"url": book_url, "reason": str(ve)})
+
+    # MOVED OUTSIDE THE LOOP & UPDATED TO valid_books
+    print("\n--- Stage 4 Sample Record ---")
+    if valid_books:
+        print(json.dumps(valid_books[0], indent=2))
+        print(f"valid_records={len(valid_books)}")
+    else:
+        print("No valid records found. Check errors list.")
+
+    # Write output files
+    output_dir = "output"
+    os.makedirs(output_dir, exist_ok=True)
+
+    with open(os.path.join(output_dir, "books.json"), "w", encoding="utf-8") as f:
+        json.dump(valid_books, f, indent=2)
+
+    with open(os.path.join(output_dir, "errors.json"), "w", encoding="utf-8") as f:
+        json.dump(errors, f, indent=2)
+
+
 
 if __name__ == "__main__":
     run_scraper()
+
