@@ -1,1 +1,6 @@
-[]
+[
+  {
+    "url": "https://books.toscrape.com/catalogue/fake-non-existent-book_9999/index.html",
+    "reason": "HTTP 404 Permanent Failure"
+  }
+]
